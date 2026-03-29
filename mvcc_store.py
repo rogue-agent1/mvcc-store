@@ -1,56 +1,72 @@
 #!/usr/bin/env python3
-"""Multi-Version Concurrency Control (MVCC) key-value store."""
-import sys, time
-
-class Version:
-    def __init__(self, value, ts, deleted=False):
-        self.value, self.ts, self.deleted = value, ts, deleted
+"""MVCC key-value store with snapshot isolation."""
+import threading
 
 class MVCCStore:
     def __init__(self):
-        self.data, self.clock = {}, 0
-    def _tick(self): self.clock += 1; return self.clock
-    def begin(self): return self._tick()
-    def read(self, key, snapshot):
-        if key not in self.data: return None
-        for v in reversed(self.data[key]):
-            if v.ts <= snapshot:
-                return None if v.deleted else v.value
+        self._data = {}  # key -> [(version, value, deleted)]
+        self._version = 0
+        self._lock = threading.Lock()
+
+    def _next_version(self):
+        with self._lock:
+            self._version += 1
+            return self._version
+
+    def put(self, key, value):
+        ver = self._next_version()
+        self._data.setdefault(key, []).append((ver, value, False))
+        return ver
+
+    def delete(self, key):
+        ver = self._next_version()
+        self._data.setdefault(key, []).append((ver, None, True))
+        return ver
+
+    def get(self, key, version=None):
+        if version is None:
+            version = self._version
+        history = self._data.get(key, [])
+        for ver, val, deleted in reversed(history):
+            if ver <= version:
+                return None if deleted else val
         return None
-    def write(self, key, value, txn_ts=None):
-        ts = txn_ts or self._tick()
-        self.data.setdefault(key, []).append(Version(value, ts))
-    def delete(self, key, txn_ts=None):
-        ts = txn_ts or self._tick()
-        self.data.setdefault(key, []).append(Version(None, ts, deleted=True))
-    def gc(self, before_ts):
-        for key in list(self.data):
-            versions = self.data[key]
-            keep = [v for v in versions if v.ts >= before_ts]
-            old = [v for v in versions if v.ts < before_ts]
-            if old: keep.insert(0, old[-1])
-            self.data[key] = keep
 
-def main():
-    if len(sys.argv) < 2: print("Usage: mvcc_store.py <demo|test>"); return
-    cmd = sys.argv[1]
-    if cmd == "demo":
-        s = MVCCStore()
-        snap1 = s.begin(); s.write("x", 10); snap2 = s.begin()
-        s.write("x", 20); snap3 = s.begin()
-        print(f"@snap1: {s.read('x', snap1)}, @snap2: {s.read('x', snap2)}, @snap3: {s.read('x', snap3)}")
-    elif cmd == "test":
-        s = MVCCStore()
-        snap0 = s.begin(); s.write("k", "v1"); snap1 = s.begin()
-        assert s.read("k", snap0) is None  # written after snap0
-        assert s.read("k", snap1) == "v1"
-        s.write("k", "v2"); snap2 = s.begin()
-        assert s.read("k", snap1) == "v1"
-        assert s.read("k", snap2) == "v2"
-        s.delete("k"); snap3 = s.begin()
-        assert s.read("k", snap2) == "v2"
-        assert s.read("k", snap3) is None
-        s.gc(snap2); assert s.read("k", snap2) == "v2"
-        print("All tests passed!")
+    def snapshot(self):
+        return self._version
 
-if __name__ == "__main__": main()
+    def history(self, key):
+        return [(v, val, d) for v, val, d in self._data.get(key, [])]
+
+if __name__ == "__main__":
+    store = MVCCStore()
+    store.put("name", "Alice")
+    snap1 = store.snapshot()
+    store.put("name", "Bob")
+    snap2 = store.snapshot()
+    print(f"Current: {store.get('name')}")
+    print(f"At snap1: {store.get('name', snap1)}")
+    print(f"At snap2: {store.get('name', snap2)}")
+
+def test():
+    s = MVCCStore()
+    s.put("k", "v1")
+    snap1 = s.snapshot()
+    s.put("k", "v2")
+    snap2 = s.snapshot()
+    s.put("k", "v3")
+    # Current
+    assert s.get("k") == "v3"
+    # Historical
+    assert s.get("k", snap1) == "v1"
+    assert s.get("k", snap2) == "v2"
+    # Delete
+    s.delete("k")
+    assert s.get("k") is None
+    assert s.get("k", snap2) == "v2"
+    # History
+    h = s.history("k")
+    assert len(h) == 4
+    # Missing key
+    assert s.get("missing") is None
+    print("  mvcc_store: ALL TESTS PASSED")

@@ -1,10 +1,17 @@
-# Mvcc Store
+# mvcc_store
 
-A zero-dependency Python CLI tool.
+Multi-Version Concurrency Control (MVCC) key-value store
+
+Single-file, zero-dependency Python CLI tool.
 
 ## Usage
 
 ```bash
-python mvcc_store.py test
-python mvcc_store.py demo
+python mvcc_store.py --help
+```
+
+## Test
+
+```bash
+python -c "import mvcc_store; mvcc_store.test()"
 ```
